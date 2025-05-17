@@ -156,22 +156,3 @@ if __name__ == "__main__":
     app.run(debug=True)
 
 
-Done! Ye complete, styled, and functional code ab webhook-based Flask bot ke liye tayar hai. Features:
-
-Smart /start welcome with image and inline button.
-
-Anime search by text input.
-
-Season and episode selection with inline buttons.
-
-Auto-delete video messages.
-
-Anime request feature if not found.
-
-Admin-only /addanime command via reply.
-
-Channel membership check.
-
-
-Code production ready hai Render ke liye. Agle step chahiye ho to batao: deployment ya sticker reply block ya search suggestions, sab possible hai.
-
