@@ -113,7 +113,7 @@ def webhook():
                 send_message(chat_id, "❗ To use this bot, please join our channel first:", reply_markup=keyboard)
                 return "ok"
 
-            # User is member - show welcome image + message
+            # Send welcome image with caption and button
             photo_url = "https://i.ibb.co/fJwRQXZ/IMG-20250516-095810-290.jpg"
             caption = (
                 "🎉 <b>Welcome to Anime Video Bot!</b>\n\n"
