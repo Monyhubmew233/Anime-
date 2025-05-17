@@ -31,7 +31,7 @@ def save_json(file, data):
     with open(file, "w") as f:
         json.dump(data, f, indent=2)
 
-# Check user is member
+# Check membership
 def is_member(user_id):
     try:
         resp = requests.get(f"{API_URL}/getChatMember", params={
@@ -43,14 +43,13 @@ def is_member(user_id):
     except:
         return False
 
-# Send basic message
+# Messaging
 def send_message(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
     requests.post(f"{API_URL}/sendMessage", data=data)
 
-# Send video
 def send_video(chat_id, file_id, caption):
     full_caption = f"{caption}\n\n⚠️ Please forward this video. It will be deleted in 2 minutes due to copyright."
     data = {
@@ -71,34 +70,21 @@ def delete_message_later(chat_id, message_id, delay=120):
         "message_id": message_id
     })
 
-# Title extractor
-def parse_title_parts(text):
-    title = re.sub(r"[\s_]+", " ", text.lower()).strip()
-    match = re.match(r"(.+?)\s*(season\s*\d+)?\s*(ep(isode)?\s*\d+)?", title)
+# Extract and group helpers
+def extract_anime_title(caption):
+    match = re.search(r"(.+?)\s*(season\s*\d+)?\s*(ep(isode)?\s*\d+)?", caption, re.IGNORECASE)
     if match:
-        base = match.group(1).strip()
-        season = match.group(2).strip() if match.group(2) else None
-        episode = match.group(3).strip() if match.group(3) else None
-        return base, season, episode
-    return title, None, None
+        parts = [p.strip().lower() for p in match.groups() if p]
+        return ' '.join(parts)
+    return None
 
-# Group by season
-def get_seasons(db, base_title):
-    seasons = set()
-    for key in db:
-        if key.startswith(base_title):
-            _, s, _ = parse_title_parts(key)
-            if s:
-                seasons.add(s)
-    return sorted(seasons)
-
-def get_episodes(db, base_title, season):
-    eps = []
-    for key in db:
-        bt, s, e = parse_title_parts(key)
-        if bt == base_title and s == season:
-            eps.append((key, e))
-    return sorted(eps, key=lambda x: x[1])
+def group_by_season(matches):
+    grouped = defaultdict(list)
+    for name in matches:
+        season = re.search(r"(season\s*\d+)", name, re.IGNORECASE)
+        key = season.group(1).lower() if season else "Other"
+        grouped[key].append(name)
+    return grouped
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -116,22 +102,33 @@ def webhook():
 
         if text.lower() == "/start":
             if not is_member(user_id):
-                keyboard = {"inline_keyboard": [[{"text": "Join Channel", "url": JOIN_URL}]]}
-                send_message(chat_id, "❗ Please join the channel to use this bot:", reply_markup=keyboard)
+                keyboard = {
+                    "inline_keyboard": [[
+                        {"text": "Join Channel", "url": JOIN_URL}
+                    ]]
+                }
+                send_message(chat_id, "❗ To use this bot, please join our channel first:", reply_markup=keyboard)
                 return "ok"
+
             photo_url = "https://i.ibb.co/fJwRQXZ/IMG-20250516-095810-290.jpg"
             caption = (
                 "🎉 <b>Welcome to Anime Video Bot!</b>\n\n"
+                "You can:\n"
                 "➤ Type any anime name to get the video.\n"
                 "➤ If not found, press 'Request to Add'.\n"
-                "➤ Or reply to any video and use <code>/addanime &lt;name&gt;</code>."
+                "➤ Or reply to any video and use <code>/addanime &lt;name&gt;</code>.\n\n"
+                "<b>Now enter the name of the anime you're looking for...</b>"
             )
             data = {
                 "chat_id": chat_id,
                 "photo": photo_url,
                 "caption": caption,
                 "parse_mode": "HTML",
-                "reply_markup": json.dumps({"inline_keyboard": [[{"text": "Join our Anime Community", "url": JOIN_URL}]]})
+                "reply_markup": json.dumps({
+                    "inline_keyboard": [[
+                        {"text": "Join our Anime Community", "url": JOIN_URL}
+                    ]]
+                })
             }
             requests.post(f"{API_URL}/sendPhoto", data=data)
             return "ok"
@@ -161,32 +158,38 @@ def webhook():
             return "ok"
 
         if "video" in message and "caption" in message:
-            title, season, episode = parse_title_parts(message["caption"])
-            key = f"{title} {season} {episode}".strip()
-            if key not in db:
-                db[key] = {
+            title = extract_anime_title(message["caption"])
+            if title and title not in db:
+                db[title] = {
                     "file_id": message["video"]["file_id"],
                     "caption": message["caption"]
                 }
                 save_json(DB_FILE, db)
-                send_message(chat_id, f"✅ Auto-added anime: <b>{key}</b>")
+                send_message(chat_id, f"✅ Auto-added anime: <b>{title}</b>")
             return "ok"
 
         if text:
-            base_title, _, _ = parse_title_parts(text)
-            matches = difflib.get_close_matches(base_title, [parse_title_parts(k)[0] for k in db.keys()], n=1, cutoff=0.3)
-            if matches:
-                matched = matches[0]
-                seasons = get_seasons(db, matched)
-                if seasons:
-                    keyboard = {"inline_keyboard": [[{"text": s.title(), "callback_data": f"s_{matched}_{s}"}] for s in seasons]}
-                    send_message(chat_id, f"📺 Found anime: <b>{matched.title()}</b>\nSelect season:", reply_markup=keyboard)
-                else:
-                    send_message(chat_id, f"❌ No seasons found for '{matched}'")
+            anime_name = text.lower()
+            keys = list(db.keys())
+            best_matches = difflib.get_close_matches(anime_name, keys, n=25, cutoff=0.3)
+
+            if len(best_matches) == 1:
+                data = db[best_matches[0]]
+                send_video(chat_id, data["file_id"], data.get("caption", ""))
+            elif len(best_matches) > 1:
+                grouped = group_by_season(best_matches)
+                buttons = []
+                for season in sorted(grouped.keys()):
+                    season_btns = [{"text": name.title(), "callback_data": f"anime_{name}"} for name in grouped[season]]
+                    buttons.append(season_btns)
+                send_message(chat_id, "🔍 Multiple results found by seasons:", reply_markup={"inline_keyboard": buttons})
             else:
-                keyboard = {"inline_keyboard": [[{"text": "Request to Add", "callback_data": f"req_{base_title}"}]]}
-                send_message(chat_id, f"❌ Anime '{base_title}' not found.", reply_markup=keyboard)
-        return "ok"
+                keyboard = {
+                    "inline_keyboard": [[
+                        {"text": "Request to Add", "callback_data": f"req_{anime_name}"}
+                    ]]
+                }
+                send_message(chat_id, f"❌ Anime '{anime_name}' not found.", reply_markup=keyboard)
 
     elif "callback_query" in update:
         query = update["callback_query"]
@@ -201,19 +204,8 @@ def webhook():
             send_message(user["id"], f"✅ Your request for '<b>{anime_req}</b>' has been sent to admin.")
             send_message(ADMIN_ID, f"📥 New Anime Request from @{user.get('username', 'Unknown')}:\n<code>{anime_req}</code>")
 
-        elif data.startswith("s_"):
-            _, title, season = data.split("_", 2)
-            db = load_json(DB_FILE)
-            episodes = get_episodes(db, title, season)
-            if episodes:
-                keyboard = {"inline_keyboard": [[{"text": e[1].title(), "callback_data": f"ep_{e[0]}"}] for e in episodes]}
-                send_message(chat_id, f"📼 Season: <b>{season.title()}</b>\nChoose episode:", reply_markup=keyboard)
-            else:
-                send_message(chat_id, "❌ No episodes found.")
-
-        elif data.startswith("ep_"):
-            key = data[3:]
-            db = load_json(DB_FILE)
+        elif data.startswith("anime_"):
+            key = data[6:]
             anime_data = db.get(key)
             if anime_data:
                 send_video(chat_id, anime_data["file_id"], anime_data.get("caption", ""))
