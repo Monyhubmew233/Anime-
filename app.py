@@ -8,6 +8,8 @@ import re
 import difflib
 from collections import defaultdict
 
+app = Flask(__name__)
+
 # Environment Variables
 TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
@@ -17,9 +19,7 @@ JOIN_URL = "https://t.me/for4ever_friends"
 DB_FILE = "anime_db.json"
 REQ_FILE = "requests.json"
 
-app = Flask(__name__)
-
-# JSON DB Helpers
+# JSON Helpers
 def load_json(file):
     if not os.path.exists(file):
         with open(file, "w") as f:
@@ -31,7 +31,7 @@ def save_json(file, data):
     with open(file, "w") as f:
         json.dump(data, f, indent=2)
 
-# Chat member check
+# Check user is member
 def is_member(user_id):
     try:
         resp = requests.get(f"{API_URL}/getChatMember", params={
@@ -43,16 +43,16 @@ def is_member(user_id):
     except:
         return False
 
-# Send message
+# Send simple message
 def send_message(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
     requests.post(f"{API_URL}/sendMessage", data=data)
 
-# Send video + auto-delete
+# Send video
 def send_video(chat_id, file_id, caption):
-    full_caption = f"{caption}\n\nAaye! Please forward this video. It will be deleted in 2 minutes due to copyright."
+    full_caption = f"{caption}\n\n⚠️ Please forward this video. It will be deleted in 2 minutes due to copyright."
     data = {
         "chat_id": chat_id,
         "video": file_id,
@@ -64,6 +64,7 @@ def send_video(chat_id, file_id, caption):
         msg_id = resp["result"]["message_id"]
         threading.Thread(target=delete_message_later, args=(chat_id, msg_id)).start()
 
+# Auto delete after delay
 def delete_message_later(chat_id, message_id, delay=120):
     time.sleep(delay)
     requests.post(f"{API_URL}/deleteMessage", data={
@@ -71,7 +72,7 @@ def delete_message_later(chat_id, message_id, delay=120):
         "message_id": message_id
     })
 
-# Extract title from caption
+# Extract title
 def extract_anime_title(caption):
     match = re.search(r"(.+?)\s*(season\s*\d+)?\s*(episode\s*\d+)?", caption, re.IGNORECASE)
     if match:
@@ -79,7 +80,7 @@ def extract_anime_title(caption):
         return ' '.join(parts)
     return None
 
-# Grouping for buttons
+# Group by season
 def group_animes(anime_list):
     grouped = defaultdict(list)
     for name in anime_list:
@@ -102,7 +103,6 @@ def webhook():
         user_id = message["from"]["id"]
         username = message["from"].get("username", "NoUsername")
 
-        # Join check
         if text.lower() == "/start":
             if not is_member(user_id):
                 keyboard = {
@@ -110,16 +110,33 @@ def webhook():
                         {"text": "Join Channel", "url": JOIN_URL}
                     ]]
                 }
-                send_message(chat_id, "Please join our channel to use the bot:", reply_markup=keyboard)
+                send_message(chat_id, "❗ To use this bot, please join our channel first:", reply_markup=keyboard)
                 return "ok"
-            send_message(chat_id, "Welcome! You can:\n- Type anime name to get video\n- Reply to video + use /addanime <name>\nEnjoy!", reply_markup={
-                "inline_keyboard": [[
-                    {"text": "Join our Anime Community", "url": JOIN_URL}
-                ]]
-            })
+
+            # User is member - show welcome image + message
+            photo_url = "https://i.ibb.co/fJwRQXZ/IMG-20250516-095810-290.jpg"
+            caption = (
+                "🎉 <b>Welcome to Anime Video Bot!</b>\n\n"
+                "You can:\n"
+                "➤ Type any anime name to get the video.\n"
+                "➤ If not found, press 'Request to Add'.\n"
+                "➤ Or reply to any video and use <code>/addanime &lt;name&gt;</code>.\n\n"
+                "<b>Now enter the name of the anime you're looking for...</b>"
+            )
+            data = {
+                "chat_id": chat_id,
+                "photo": photo_url,
+                "caption": caption,
+                "parse_mode": "HTML",
+                "reply_markup": json.dumps({
+                    "inline_keyboard": [[
+                        {"text": "Join our Anime Community", "url": JOIN_URL}
+                    ]]
+                })
+            }
+            requests.post(f"{API_URL}/sendPhoto", data=data)
             return "ok"
 
-        # Manual /addanime
         if text.lower().startswith("/addanime") and reply:
             parts = text.split(" ", 1)
             if len(parts) == 2:
@@ -139,25 +156,22 @@ def webhook():
                         del req_db[anime_name]
                         save_json(REQ_FILE, req_db)
                 else:
-                    send_message(chat_id, "Reply must contain a video.")
+                    send_message(chat_id, "❗ Reply must contain a video.")
             else:
                 send_message(chat_id, "Usage: /addanime <name>")
             return "ok"
 
-        # Auto-add from captioned video
         if "video" in message and "caption" in message:
             title = extract_anime_title(message["caption"])
-            if title:
-                if title not in db:
-                    db[title] = {
-                        "file_id": message["video"]["file_id"],
-                        "caption": message["caption"]
-                    }
-                    save_json(DB_FILE, db)
-                    send_message(chat_id, f"✅ Auto-added anime: <b>{title}</b>")
+            if title and title not in db:
+                db[title] = {
+                    "file_id": message["video"]["file_id"],
+                    "caption": message["caption"]
+                }
+                save_json(DB_FILE, db)
+                send_message(chat_id, f"✅ Auto-added anime: <b>{title}</b>")
             return "ok"
 
-        # Smart Anime Search
         if text:
             anime_name = text.lower()
             keys = list(db.keys())
@@ -166,15 +180,13 @@ def webhook():
             if len(best_matches) == 1:
                 data = db[best_matches[0]]
                 send_video(chat_id, data["file_id"], data.get("caption", ""))
-
             elif len(best_matches) > 1:
                 grouped = group_animes(best_matches)
                 buttons = []
                 for season, names in grouped.items():
                     for name in names:
                         buttons.append([{"text": name.title(), "callback_data": f"anime_{name}"}])
-                send_message(chat_id, "Multiple results found:", reply_markup={"inline_keyboard": buttons})
-
+                send_message(chat_id, "🔍 Multiple results found:", reply_markup={"inline_keyboard": buttons})
             else:
                 keyboard = {
                     "inline_keyboard": [[
@@ -183,7 +195,6 @@ def webhook():
                 }
                 send_message(chat_id, f"❌ Anime '{anime_name}' not found.", reply_markup=keyboard)
 
-    # Handle Callback Buttons
     elif "callback_query" in update:
         query = update["callback_query"]
         data = query["data"]
@@ -194,8 +205,8 @@ def webhook():
             anime_req = data[4:]
             req_db[anime_req] = user["id"]
             save_json(REQ_FILE, req_db)
-            send_message(user["id"], f"Your request for '<b>{anime_req}</b>' has been sent to admin.")
-            send_message(ADMIN_ID, f"📥 New Request from @{user.get('username', 'Unknown')}:\n<code>{anime_req}</code>")
+            send_message(user["id"], f"✅ Your request for '<b>{anime_req}</b>' has been sent to admin.")
+            send_message(ADMIN_ID, f"📥 New Anime Request from @{user.get('username', 'Unknown')}:\n<code>{anime_req}</code>")
 
         elif data.startswith("anime_"):
             key = data[6:]
