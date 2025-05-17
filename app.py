@@ -12,19 +12,20 @@ API_URL = f"https://api.telegram.org/bot{TOKEN}"
 JOIN_CHANNEL = "@for4ever_friends"
 JOIN_URL = "https://t.me/for4ever_friends"
 DB_FILE = "anime_db.json"
+REQ_FILE = "requests.json"
 
 app = Flask(__name__)
 
-# Database Load & Save
-def load_db():
-    if not os.path.exists(DB_FILE):
-        with open(DB_FILE, "w") as f:
+# Load/Save JSON DB
+def load_json(file):
+    if not os.path.exists(file):
+        with open(file, "w") as f:
             json.dump({}, f)
-    with open(DB_FILE, "r") as f:
+    with open(file, "r") as f:
         return json.load(f)
 
-def save_db(data):
-    with open(DB_FILE, "w") as f:
+def save_json(file, data):
+    with open(file, "w") as f:
         json.dump(data, f, indent=2)
 
 # Join check
@@ -39,22 +40,28 @@ def is_member(user_id):
     except:
         return False
 
-# Message send
+# Send text message
 def send_message(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = json.dumps(reply_markup)
     requests.post(f"{API_URL}/sendMessage", data=data)
 
-# Video send + auto-delete
+# Send video + auto-delete
 def send_video(chat_id, file_id, caption):
-    data = {"chat_id": chat_id, "video": file_id, "caption": caption}
+    full_caption = f"{caption}\n\nAaye! Please forward this video. It will be deleted in 2 minutes due to copyright."
+    data = {
+        "chat_id": chat_id,
+        "video": file_id,
+        "caption": full_caption,
+        "parse_mode": "HTML"
+    }
     resp = requests.post(f"{API_URL}/sendVideo", data=data).json()
     if resp.get("ok"):
         msg_id = resp["result"]["message_id"]
         threading.Thread(target=delete_message_later, args=(chat_id, msg_id)).start()
 
-def delete_message_later(chat_id, message_id, delay=180):
+def delete_message_later(chat_id, message_id, delay=120):  # 2 minutes
     time.sleep(delay)
     requests.post(f"{API_URL}/deleteMessage", data={
         "chat_id": chat_id,
@@ -90,7 +97,8 @@ def webhook():
             })
             return "ok"
 
-        db = load_db()
+        db = load_json(DB_FILE)
+        req_db = load_json(REQ_FILE)
 
         # /addanime command
         if text.lower().startswith("/addanime") and reply:
@@ -105,8 +113,16 @@ def webhook():
                         "file_id": video["file_id"],
                         "caption": caption
                     }
-                    save_db(db)
-                    send_message(chat_id, f"Anime '{anime_name}' added successfully!")
+                    save_json(DB_FILE, db)
+                    send_message(chat_id, f"✅ Anime '{anime_name}' added successfully!")
+
+                    # Notify user if it was requested
+                    if anime_name in req_db:
+                        requester_id = req_db[anime_name]
+                        send_message(requester_id, f"✅ Anime '{anime_name}' has been added and is now available!")
+                        del req_db[anime_name]
+                        save_json(REQ_FILE, req_db)
+
                 else:
                     send_message(chat_id, "Reply must contain a video.")
             else:
@@ -131,7 +147,7 @@ def webhook():
                         {"text": "Request to Add", "callback_data": f"req_{anime_name}"}
                     ]]
                 }
-                send_message(chat_id, f"Anime '{anime_name}' not found.", reply_markup=keyboard)
+                send_message(chat_id, f"❌ Anime '{anime_name}' not found.", reply_markup=keyboard)
 
     # Callback buttons
     elif "callback_query" in update:
@@ -140,14 +156,18 @@ def webhook():
         user = query["from"]
         chat_id = query["message"]["chat"]["id"]
 
+        req_db = load_json(REQ_FILE)
+        db = load_json(DB_FILE)
+
         if data.startswith("req_"):
             anime_req = data[4:]
-            send_message(user["id"], f"Request sent for: {anime_req}")
-            send_message(ADMIN_ID, f"@{user.get('username', 'Unknown')} requested: {anime_req}")
+            req_db[anime_req] = user["id"]
+            save_json(REQ_FILE, req_db)
+            send_message(user["id"], f"Your request for anime '<b>{anime_req}</b>' has been sent to the admin.", reply_markup=None)
+            send_message(ADMIN_ID, f"📥 New Anime Request from @{user.get('username', 'Unknown')}:\n<code>{anime_req}</code>")
 
         elif data.startswith("anime_"):
             key = data[6:]
-            db = load_db()
             anime_data = db.get(key)
             if anime_data:
                 send_video(chat_id, anime_data["file_id"], anime_data.get("caption", ""))
